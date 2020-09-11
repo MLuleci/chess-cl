@@ -45,15 +45,15 @@
  | <File> ::= [a-h]
  | <Rank> ::= [1-8]
  | 
- | Parsed trees:
- | file: (file [0-7])
- | rank: (rank [0-7])
- | square: (square <file> <rank>)
- | name: king|queen|rook|bishop|knight|pawn
+ | Parsed trees: -- TODO: Revise these!!
+ | file: (:file [0-7])
+ | rank: (:rank [0-7])
+ | square: (<file> <rank>)
+ | name: (:kind king|queen|rook|bishop|knight|pawn)
  | piece: (<name> [<square>|<file>|<rank>])
  | move: (move <piece> <square>)
  | capture: (capture <piece> <square>)
- | castle: king-side|queen-side
+ | castle: (castle king-side|queen-side)
  | promotion: (promotion <square> <name>) *name is "=X"
 |#
 
@@ -186,60 +186,60 @@
   "Parse a <File>"
   (funcall (bind (sat (lambda (x) (and (char>= x #\a) (char<= x #\h))))
                  (lambda (x)
-                   (result (list 'file
+                   (result (list :file
                                  (- (char-int x) (char-int #\a))))))
            inp))
 
 (defun parse-rank (inp)
   "Parse a <Rank>"
-  (funcall (bind #'parse-digit
+  (funcall (bind (sat (lambda (x) (and (char>= x #\1) (char<= x #\8))))
                  (lambda (x)
-                   (let ((n (parse-integer (string x))))
-                     (if (and (> n 0) (< n 9))
-                         (result (list 'rank (1- n)))
-                         #'parse-zero))))
+                   (result (list :rank
+                                 (- (char-int x) (char-int #\0) 1)))))
            inp))
 
 (defun parse-square (inp)
   "Parse a <Square> ::= <File><Rank>"
   (funcall (bind (then #'parse-file #'parse-rank)
                  (lambda (x)
-                   (result (cons 'square x))))
+                   (result (flatten x))))
            inp))
 
 (defun parse-name (inp)
   "Parse a <Name> ::= K | Q | R | B | N"
   (funcall (bind #'parse-item
                  (lambda (x)
-                   (cond ((char= x #\K) (result 'king))
-                         ((char= x #\Q) (result 'queen))
-                         ((char= x #\R) (result 'rook))
-                         ((char= x #\B) (result 'bishop))
-                         ((char= x #\N) (result 'knight))
+                   (cond ((char= x #\K) (result (list :kind 'king)))
+                         ((char= x #\Q) (result (list :kind 'queen)))
+                         ((char= x #\R) (result (list :kind 'rook)))
+                         ((char= x #\B) (result (list :kind 'bishop)))
+                         ((char= x #\N) (result (list :kind 'knight)))
                          (t #'parse-zero))))
            inp))
 
 (defun parse-piece (inp)
   "Parse a <Piece> ::= (see above)"
-  (funcall (any #'parse-name
-                (then #'parse-name #'parse-square)
-                (then #'parse-name #'parse-file)
-                (then #'parse-name #'parse-rank)
-                (bind #'parse-file
-                      (lambda (x)
-                        (lambda (i)
-                          (declare (ignore i))
-                          `(((pawn ,x) . ,inp))))))
-           inp))
+  (mapcar (lambda (pair)
+            (cons (flatten (car pair)) (cdr pair)))
+          (funcall (any #'parse-name
+                        (then #'parse-name #'parse-square)
+                        (then #'parse-name #'parse-file)
+                        (then #'parse-name #'parse-rank)
+                        (bind #'parse-file
+                              (lambda (x)
+                                (lambda (i)
+                                  (declare (ignore i))
+                                  `(((:kind 'pawn ,x) . ,inp))))))
+                   inp)))
 
 (defun parse-castle (inp)
   "Parse a <Castle> ::= O-O | O-O-O"
   (cond ((and (> (length inp) 4)
               (string= (subseq inp 0 5) "O-O-O"))
-         (list (cons 'queen-side (subseq inp 5))))
+         (list (cons '(castle queen-side) (subseq inp 5))))
         ((and (> (length inp) 2)
               (string= (subseq inp 0 3) "O-O"))
-         (list (cons 'king-side (subseq inp 3))))))
+         (list (cons '(castle king-side) (subseq inp 3))))))
 
 (defun parse-promotion (inp)
   "Parse a <Promotion> ::= <Square>=<Name>"
@@ -255,7 +255,10 @@
 
 (defun parse-capture (inp)
   "Parse a <Capture> ::= <Piece>x<Square>"
-  (funcall (bind #'parse-piece
+  (funcall (bind (plus #'parse-piece
+                       (bind #'parse-file
+                             (lambda (f)
+                               (result `(pawn ,f)))))
                  (lambda (p)
                    (bind (parse-char #\x)
                          (lambda (op)

@@ -40,3 +40,43 @@
 (defun imply (ant con)
   "Logical IMPLY operator; ant -> con"
   (if ant con t))
+
+(defun mapf (fn seq)
+  "Apply mapcon to each subsequence, like mapcon + maplist"
+  (mapcon (lambda (subsq)
+            (let ((head (car subsq)))
+              (if (consp head)
+                  (mapf fn head)
+                  (funcall fn subsq))))
+          seq))
+
+(defun flatten (seq)
+  "Flatten nested lists (non-destructive)"
+  (when seq
+    (if (consp (car seq))
+        (append (flatten (car seq))
+                (flatten (cdr seq)))
+        (cons (car seq)
+              (flatten (cdr seq))))))
+
+(deftype bitboard ()
+  `(bit-vector 64))
+
+(defun make-bitboard (&optional (other nil otherp))
+  "Create an empty (or copy) bit board"
+  (declare (ftype (function () bitboard)))
+  (if otherp
+      (make-array 64 :element-type 'bit :fill-pointer t :initial-contents other)
+      (make-array 64 :element-type 'bit :fill-pointer t)))
+
+(defun setb (board x y bit)
+  "Set square value on bitboard specified by subscripts"
+  (when (and (typep board 'bitboard)
+             (valid-position-p x y))
+    (setf (bit board (+ x (* y 8))) bit)))
+
+(defun getb (board x y)
+  "Get square value on bitboard specified by subscripts"
+  (when (and (typep board 'bitboard)
+             (valid-position-p x y))
+    (bit board (+ x (* y 8)))))

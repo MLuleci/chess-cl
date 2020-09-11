@@ -8,6 +8,7 @@
     :components ((:file "packages")
                  (:file "term")
                  (:file "util")
+                 (:file "parse")
                  (:file "piece")
                  (:file "player")
                  (:file "control")))

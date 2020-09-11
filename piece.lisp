@@ -93,54 +93,47 @@
         (*print-pretty*
          (format stream "~c" (piece-char obj)))))
 
-;; Valid move checks
-(defmethod valid-move-p :before ((obj piece) x y)
-  (unless (not (valid-position-p x y))
-      (call-next-method)))
+;; Valid delta checks (only one part of a valid move check)
+(defmacro with-delta (seq body) ; (with-delta (obj x y) forms*)
+  "Helper that binds dx and dy inside body given x, y, and piece"
+  `(with-slots (x-pos y-pos) ,(car seq)
+     (let ((dx (abs (- ,(cadr seq) x-pos)))
+           (dy (abs (- ,(caddr seq) y-pos))))
+       ,body)))
+    
+(defmethod valid-delta-p ((obj king) x y)
+  (with-delta (obj x y)
+    (and (<= dx 1) (<= dy 1))))
 
-(defmethod valid-move-p ((obj king) x y)
-  (with-slots (x-pos y-pos) obj
-    (let ((dx (abs (- x x-pos)))
-          (dy (abs (- y y-pos))))
-      (and (<= dx 1) (<= dy 1)))))
+(defmethod valid-delta-p ((obj queen) x y)
+  (with-delta (obj x y)
+    (or (= dx 0)
+        (= dy 0)
+        (= dx dy))))
 
-(defmethod valid-move-p ((obj queen) x y)
-  (with-slots (x-pos y-pos) obj
-    (let ((dx (abs (- x x-pos)))
-          (dy (abs (- y y-pos))))
-      (or (= dx 0)
-          (= dy 0)
-          (= dx dy)))))
+(defmethod valid-delta-p ((obj rook) x y)
+  (with-delta (obj x y)
+    (or (= dx 0) (= dy 0))))
 
-(defmethod valid-move-p ((obj rook) x y)
-  (with-slots (x-pos y-pos) obj
-    (let ((dx (abs (- x x-pos)))
-          (dy (abs (- y y-pos))))
-      (or (= dx 0) (= dy 0)))))
+(defmethod valid-delta-p ((obj bishop) x y)
+  (with-delta (obj x y)
+    (= dx dy)))
 
-(defmethod valid-move-p ((obj bishop) x y)
-  (with-slots (x-pos y-pos) obj
-    (let ((dx (abs (- x x-pos)))
-          (dy (abs (- y y-pos))))
-      (= dx dy)))) ; May move diagonally
+(defmethod valid-delta-p ((obj knight) x y)
+  (with-delta (obj x y)
+    (or (and (= dx 2) (= dy 1))
+        (and (= dx 1) (= dy 2)))))
 
-(defmethod valid-move-p ((obj knight) x y)
-  (with-slots (x-pos y-pos) obj
-    (let ((dx (abs (- x x-pos)))
-          (dy (abs (- y y-pos))))
-      (or (and (= dx 2) (= dy 1))
-          (and (= dx 1) (= dy 2))))))
-      
-(defmethod valid-move-p ((obj pawn) x y)
-  (with-slots (x-pos y-pos color) obj
-    (let ((dx (abs (- x x-pos)))
-          (dy (abs (- y y-pos))))
+(defmethod valid-delta-p ((obj pawn) x y)
+  (with-delta (obj x y)
+    (with-slots (color) obj
       (and (<= dx 1) ; Assuming capture checks have already passed
            (if (eq color 'white) ; Assuming white pawns travel upwards
                (> dy 0)
                (< dy 0))))))
 
 ;; General move method
+#| Name may collide with other methods, commented out for now... 
 (defmethod move-piece ((obj piece) x y)
   "Move a piece by updating its x- and y-coordinates"
   (when (valid-move-p obj x y)
@@ -148,3 +141,4 @@
       (setf x-pos x)
       (setf y-pos y))
     obj)) ; Return the modified object on success, nil otherwise
+|#
