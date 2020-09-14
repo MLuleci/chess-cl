@@ -45,7 +45,7 @@
  | <File> ::= [a-h]
  | <Rank> ::= [1-8]
  | 
- | Parsed trees: -- TODO: Revise these!!
+ | Parsed trees:
  | file: (:file [0-7])
  | rank: (:rank [0-7])
  | square: (<file> <rank>)
@@ -279,7 +279,10 @@
 
 (defun parse-start (inp)
   "Parse any chess move <Start> ::= <Move> | <Capture> | <Promotion> | <Castle>"
-  (funcall (any #'parse-move
+  (funcall (any (then (parse-string "help") (result '(help)))
+                (then (parse-string "draw") (result '(draw)))
+                (then (parse-string "resign") (result '(resign)))
+                #'parse-move
                 #'parse-capture
                 #'parse-promotion
                 #'parse-castle)

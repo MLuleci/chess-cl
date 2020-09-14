@@ -7,4 +7,13 @@ The game of chess written in Common Lisp.
 - Save/load
 
 *TODO:*
-- valid-move-p must check if any other pieces lie on the path
+- Check victory conditions (at the start of every half-turn) [DONE]
+- Add 'help', 'resign' and 'draw' commands [DONE]
+- Create a main loop [DONE]
+- Check tests (within each executor) [DONE]
+- Organize control.lisp in order of dependence [DONE]
+- Rewrite move & capture to use generic methods [DONE]
+- Checkmate test
+- Testing, testing, testing!
+- Create a setup/main menu screen
+- Save/load or ai; have your pick!

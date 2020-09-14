@@ -80,3 +80,13 @@
   (when (and (typep board 'bitboard)
              (valid-position-p x y))
     (bit board (+ x (* y 8)))))
+
+(defmacro abs- (&rest numbers)
+  "Calculate absolute difference"
+  `(abs (apply #'- ',numbers)))
+
+(defmacro if-color (obj white-clause black-clause)
+  "Execute a branch depending on piece color"
+  `(if (eq (piece-color obj) 'white)
+       ,white-clause
+       ,black-clause))

@@ -10,7 +10,7 @@
           :type keyword
           :documentation "Player color, either black or white")
    (score :accessor player-score
-          :initform 0
+          :initform 39
           :type integer
           :documentation "Player score")
    (pieces :accessor player-pieces
@@ -28,6 +28,102 @@
 (defparameter *white-player* nil)
 (defparameter *black-player* nil)
 
+;;; Helper functions
+
+(defun enemies-p (a b)
+  "Test if two pieces are enemies"
+  (and (typep a 'piece)
+       (typep b 'piece)
+       (not (eq (piece-color a) (piece-color b)))))
+
+(defun player-with-color (color)
+  "Returns global player object matching given color"
+  (when (valid-color-p color)
+    (if (eq color 'white)
+        *white-player*
+        *black-player*)))
+
+(defun iterate-hash-tables (fn &rest rest)
+  "Apply fn to every (key,value) pair in the tables given by rest"
+  (dolist (table rest)
+    (maphash fn table)))
+
+(defmacro iterate-pieces (fn)
+  "Apply fn to every piece on the board"
+  `(iterate-hash-tables
+    (lambda (key value)
+      (declare (ignore key))
+      (dolist (piece value)
+        (funcall ,fn piece)))
+    (player-pieces *white-player*)
+    (player-pieces *black-player*)))
+
+#| Searching through all of the pieces for every search is OK
+ | because there are at most 32 pieces in the game (usually less).
+|#
+(defun find-piece
+    (&key (color nil colorp) (kind nil kindp) (rank nil rankp) (file nil filep))
+  "Find piece(s) matching the given parameters"
+  (let ((seq nil))
+    (iterate-pieces
+     (lambda (p)
+       (with-slots (x-pos y-pos (col color)) p
+         (when (and (imply colorp (eq col color))
+                    (imply kindp (eq (type-of p) kind))
+                    (imply rankp (eq y-pos rank))
+                    (imply filep (eq x-pos file)))
+           (push p seq)))))
+    seq))
+
+(defun make-path (x0 y0 x1 y1)
+  "Draw a path between two points on a bitboard"
+  ; https://en.wikipedia.org/wiki/Bresenham%27s_line_algorithm
+  (flet ((plot-low (x0 y0 x1 y1 plot-fn)
+           (let* ((dx (- x1 x0))
+                  (dy (abs- y1 y0))
+                  (yi (signum (- y1 y0)))
+                  (D (- (* 2 dy) dx))
+                  (y y0))
+             (loop for x from x0 to x1
+                do (funcall plot-fn x y)
+                  (when (> D 0)
+                    (incf y yi)
+                    (decf D (* 2 dx)))
+                  (incf D (* 2 dy)))))
+         (plot-high (x0 y0 x1 y1 plot-fn)
+           (let* ((dx (abs- x1 x0))
+                  (dy (- y1 y0))
+                  (xi (signum (- x1 x0)))
+                  (D (- (* 2 dx) dy))
+                  (x x0))
+             (loop for y from y0 to y1
+                do (funcall plot-fn x y)
+                  (when (> D 0)
+                    (incf x xi)
+                    (decf D (* 2 dy)))
+                  (incf D (* 2 dx))))))
+    (let* ((board (make-bitboard))
+           (fn (lambda (x y) (setb board x y 1))))
+      (if (< (abs- y1 y0) (abs- x1 x0))
+          (if (> x0 x1)
+              (plot-low x1 y1 x0 y0 fn)
+              (plot-low x0 y0 x1 y1 fn))
+          (if (> y0 y1)
+              (plot-high x1 y1 x0 y0 fn)
+              (plot-high x0 y0 x1 y1 fn)))
+      board)))
+
+(defun valid-path-p (obj x y)
+  "Iterate over every piece, checking for blockages in the path"
+  (declare (ftype (function (piece real real) boolean)))
+  (let* ((path (make-path (piece-x obj) (piece-y obj) x y))
+         (copy (make-bitboard path)))
+    (iterate-pieces
+     (lambda (p)
+       (unless (eq p obj)
+         (setb copy (piece-x p) (piece-y p) 0))))
+    (equal path copy)))
+
 ;;; Method definitions
 
 ;; Initializer methods
@@ -43,9 +139,7 @@
   (with-slots (pieces) p
     (flet ((add-piece (type x y)
              "Helper for constructing/placing pieces"
-             (let ((new (make-instance type :color color :x x :y y)))
-               (push new (gethash type pieces))
-               (incf (player-score p) (piece-value new))))
+             (push (make-instance type :color color :x x :y y) (gethash type pieces))))
       (let ((main-rank (if (eq color 'white) 0 7))
             (pawn-rank (if (eq color 'white) 1 6)))
         (add-piece 'king 4 main-rank)
@@ -90,108 +184,53 @@
        (valid-delta-p obj x y)
        (valid-path-p obj x y)))
 
+(defmethod valid-move-p ((obj pawn) x y)
+  (and (= (piece-x obj) x) ; Pawn only move within their file
+       (call-next-method)))
+
+(defmethod valid-move-p ((obj knight) x y)
+  (and (valid-position-p x y)
+       (valid-delta-p obj x y)
+       (null (find-piece :file x :rank y)))) ; Knight only check where they land
+
 (defmethod valid-capture-p ((obj piece) x y)
   "Test if a capture is valid for given piece"
   (and (valid-position-p x y)
        (valid-delta-p obj x y)
-       (let ((dx (signum (- x (piece-x obj))))
+       (let ((victim (car (find-piece :file x :rank y)))
+             (dx (signum (- x (piece-x obj))))
              (dy (signum (- y (piece-y obj)))))
          #| Validate path up-to (but excluding) destination
           | square which must have an enemy piece on it.
          |#
-         (valid-path-p obj (- x dx) (- y dy)))
+         (and (enemies-p victim obj)
+              (valid-path-p obj (- x dx) (- y dy))))))
+
+(defmethod valid-capture-p ((obj pawn) x y)
+  "Test if a capture is valid for a pawn (includes en-passant check)"
+  (and (valid-position-p x y)
+       (valid-delta-p obj x y)
+       (with-delta (obj x y)
+         (= dx dy 1)) ; Pawns capture diagonally
        (let ((victim (car (find-piece :file x :rank y))))
-         (and victim ; There is a piece to capture...
-              (not (eq (piece-color obj) ; ...that's an enemy
-                       (piece-color victim)))))))
+         (if (null victim) ; Attacking empty square => en-passant check
+             (let ((passed (car (find-piece :file x :rank (piece-y obj)))))
+               (and (typep passed 'pawn)
+                    (pawn-double-step passed)
+                    (= (- *turn-number* (last-moved passed)) 1)
+                    (enemies-p passed obj)))
+             (call-next-method)))))
 
+(defmethod valid-capture-p ((obj knight) x y)
+  "Test if a capture is valid for a knight"
+  (and (valid-position-p x y)
+       (valid-delta-p obj x y)
+       (enemies-p obj (car (find-piece :file x :rank y)))))
+
+; This method is generic i.e. not specific to pawns to avoid method-not-found errors
 (defmethod valid-promotion-p ((obj piece) x y new-kind)
-  (and (valid-move-p obj x y)
-       (subtypep new-kind 'piece)))
-
-;;; Helper functions
-
-(defun player-with-color (color)
-  "Returns global player object matching given color"
-  (when (valid-color-p color)
-    (if (eq color 'white)
-        *white-player*
-        *black-player*)))
-
-(defun iterate-hash-tables (fn &rest rest)
-  "Apply fn to every (key,value) pair in the tables given by rest"
-  (dolist (table rest)
-    (maphash fn table)))
-
-(defmacro iterate-pieces (fn)
-  "Apply fn to every piece on the board"
-  `(iterate-hash-tables
-    (lambda (key value)
-      (declare (ignore key))
-      (dolist (piece value)
-        (funcall ,fn piece)))
-    (player-pieces *white-player*)
-    (player-pieces *black-player*)))
-
-(defun find-piece
-    (&key (color nil colorp) (kind nil kindp) (rank nil rankp) (file nil filep))
-  "Find piece(s) matching the given parameters"
-  (let ((seq nil))
-    (iterate-pieces
-     (lambda (p)
-       (with-slots (x-pos y-pos (col color)) p
-         (when (and (imply colorp (eq col color))
-                    (imply kindp (eq (type-of p) kind))
-                    (imply rankp (eq y-pos rank))
-                    (imply filep (eq x-pos file)))
-           (push p seq)))))
-    seq))
-
-(defun valid-path-p (obj x y)
-  "Iterate over every piece, checking for blockages in the path"
-  (declare (ftype (function (piece real real) boolean)))
-  (let* ((path (make-path (piece-x obj) (piece-y obj) x y))
-         (copy (make-bitboard path)))
-    (iterate-pieces
-     (lambda (p)
-       (unless (eq p obj)
-         (setb copy (piece-x p) (piece-y p) 0))))
-      (equal path copy)))
-
-(defun make-path (x0 y0 x1 y1)
-  "Draw a path between two points on a bitboard"
-  ; https://en.wikipedia.org/wiki/Bresenham%27s_line_algorithm
-  (flet ((plot-low (x0 y0 x1 y1 plot-fn)
-           (let* ((dx (- x1 x0))
-                  (dy (abs (- y1 y0)))
-                  (yi (signum (- y1 y0)))
-                  (D (- (* 2 dy) dx))
-                  (y y0))
-             (loop for x from x0 to x1
-                do (funcall plot-fn x y)
-                  (when (> D 0)
-                    (incf y yi)
-                    (decf D (* 2 dx)))
-                  (incf D (* 2 dy)))))
-         (plot-high (x0 y0 x1 y1 plot-fn)
-           (let* ((dx (abs (- x1 x0)))
-                  (dy (- y1 y0))
-                  (xi (signum (- x1 x0)))
-                  (D (- (* 2 dx) dy))
-                  (x x0))
-             (loop for y from y0 to y1
-                do (funcall plot-fn x y)
-                  (when (> D 0)
-                    (incf x xi)
-                    (decf D (* 2 dy)))
-                  (incf D (* 2 dx))))))
-    (let* ((board (make-bitboard))
-           (fn (lambda (x y) (setb board x y 1))))
-      (if (< (abs (- y1 y0)) (abs (- x1 x0)))
-          (if (> x0 x1)
-              (plot-low x1 y1 x0 y0 fn)
-              (plot-low x0 y0 x1 y1 fn))
-          (if (> y0 y1)
-              (plot-high x1 y1 x0 y0 fn)
-              (plot-high x0 y0 x1 y1 fn)))
-      board)))
+ "Test if a promotion is valid for given piece"
+  (and (typep obj 'pawn)
+       (member new-kind '(bishop knight rook queen))
+       (= y (if-color obj 7 0))
+       (valid-move-p obj x y)))

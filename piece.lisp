@@ -36,7 +36,11 @@
 (defclass rook (piece) ())
 (defclass bishop (piece) ())
 (defclass knight (piece) ())
-(defclass pawn (piece) ())
+(defclass pawn (piece)
+  ((double-step :accessor pawn-double-step
+                :initform nil
+                :type boolean
+                :documentation "Whether this pawn has double-stepped")))
 
 ;;; Method definitions
 
@@ -97,8 +101,8 @@
 (defmacro with-delta (seq body) ; (with-delta (obj x y) forms*)
   "Helper that binds dx and dy inside body given x, y, and piece"
   `(with-slots (x-pos y-pos) ,(car seq)
-     (let ((dx (abs (- ,(cadr seq) x-pos)))
-           (dy (abs (- ,(caddr seq) y-pos))))
+     (let ((dx (abs- ,(cadr seq) x-pos))
+           (dy (abs- ,(caddr seq) y-pos)))
        ,body)))
     
 (defmethod valid-delta-p ((obj king) x y)
@@ -125,20 +129,13 @@
         (and (= dx 1) (= dy 2)))))
 
 (defmethod valid-delta-p ((obj pawn) x y)
-  (with-delta (obj x y)
-    (with-slots (color) obj
+  (with-slots (color last-moved x-pos y-pos) obj
+    (let ((dx (- x x-pos))
+          (dy (- y y-pos)))
       (and (<= dx 1) ; Assuming capture checks have already passed
            (if (eq color 'white) ; Assuming white pawns travel upwards
                (> dy 0)
-               (< dy 0))))))
-
-;; General move method
-#| Name may collide with other methods, commented out for now... 
-(defmethod move-piece ((obj piece) x y)
-  "Move a piece by updating its x- and y-coordinates"
-  (when (valid-move-p obj x y)
-    (with-slots (x-pos y-pos) obj
-      (setf x-pos x)
-      (setf y-pos y))
-    obj)) ; Return the modified object on success, nil otherwise
-|#
+               (< dy 0))
+           (if last-moved ; Advancing twice on first move
+               (= (abs dy) 1)
+               (<= (abs dy) 2))))))
