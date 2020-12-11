@@ -9,25 +9,25 @@
   ((color :reader piece-color
           :initarg :color
           :type keyword
-          :documentation "Piece color, either black or white")
+          :documentation "Color - 'black or 'white")
    (char :reader piece-char
          :type character
-         :documentation "Piece representation, unicode U+2654 through U+265F")
-   (x-pos :accessor piece-x
-          :initarg :x
+         :documentation "Character representation, unicode U+2654 through U+265F")
+   (file :accessor piece-file
+          :initarg :file
           :type integer
-          :documentation "Piece x position i.e. its file")
-   (y-pos :accessor piece-y
-          :initarg :y
+          :documentation "Current file")
+   (rank :accessor piece-rank
+          :initarg :rank
           :type integer
-          :documentation "Piece y position i.e. its rank")
-   (last-moved :accessor piece-moved
-               :initform nil
-               :type integer
-               :documentation "Turn number when piece was last moved")
+          :documentation "Current rank")
    (value :reader piece-value
           :type integer
-          :documentation "Relative value of the piece"))
+          :documentation "Relative value")
+   (last-moved :accessor piece-last-moved
+               :initform -1
+               :type integer
+               :documentation "Turn number when piece was last moved"))
   (:documentation "Base piece class"))
 
 ;; Subclasses
@@ -37,25 +37,57 @@
 (defclass bishop (piece) ())
 (defclass knight (piece) ())
 (defclass pawn (piece)
-  ((double-step :accessor pawn-double-step
+  ((jumped? :accessor pawn-jumped?
                 :initform nil
                 :type boolean
-                :documentation "Whether this pawn has double-stepped")))
+                :documentation "Whether pawn has double-stepped")))
+
+;;; Helpers
+
+(defmacro if-color (obj white-clause black-clause)
+  "Execute a branch depending on piece color"
+  `(if (eq (piece-color ,obj) 'white)
+       ,white-clause
+       ,black-clause))
+
+(defgeneric opposite-color (obj)
+  (:documentation "Return the opposite color given piece or player")
+  (:method ((obj piece)) (if-color obj 'black 'white)))
+
+(defmacro with-delta ((obj x y) &body body)
+  "Helper that binds dx and dy inside body given x, y, and piece"
+  `(with-slots (file rank) ,obj
+     ,(append `(let ((dx (abs- ,x file))
+                     (dy (abs- ,y rank))))
+              ,body)))
+
+(defmacro gen-board (seq &body body)
+  "Generate board given pairs and a predicate, assumes context has `obj' defined"
+  `(let ((board (make-bitboard)))
+     (with-slots (file rank) obj
+       (dolist (pair ,seq)
+         (with-cons (dx dy) pair
+           ,(car body))))
+       board))
+
+; Shorthand, used in combination below
+(defvar cross-moves '((1 . 0) (-1 . 0) (0 . 1) (0 . -1)))
+(defvar diag-moves '((1 . 1) (-1 . 1) (1 . -1) (-1 . -1)))
 
 ;;; Method definitions
 
 ;; General initialize method
-(defmethod initialize-instance :before
-    ((obj piece) &key (color nil colorp) x y &allow-other-keys)
-  "Ensure :color is supplied and valid"
+(defmethod initialize-instance :around
+    ((obj piece) &key (color nil colorp) file rank &allow-other-keys)
   (cond ((not colorp)
-         (error "Cannot construct ~S without given :color" (type-of obj)))
+         (error "Cannot construct ~s without given :color" (type-of obj)))
         ((not (valid-color-p color))
-         (error "Invalid :color ~S, must be either BLACK or WHITE" color))
-        ((not (valid-position-p x y))
-         (error "Invalid position (~S,~S)" x y))))
+         (error "Invalid :color ~s, must be either BLACK or WHITE" color))
+        ((not (valid-position-p file rank))
+         (error "Invalid position (~s,~s)" file rank))
+        (t
+         (call-next-method))))
 
-;; Specific initialize methods
 (defmethod initialize-instance :after ((obj king) &key &allow-other-keys)
   (with-slots (color char value) obj
     (setf char (if (eq color 'white) #\♔ #\♚))
@@ -84,7 +116,7 @@
 (defmethod initialize-instance :after ((obj pawn) &key &allow-other-keys)
   (with-slots (color char value) obj
     (setf char (if (eq color 'white) #\♙ #\♟))
-    (setf value 1)))
+    (setf value 1))))
 
 ;; `print-object' implementation for `piece' class
 (defmethod print-object ((obj piece) stream)
@@ -93,49 +125,105 @@
          (error (make-condition 'print-not-readable :object obj)))
         (*print-escape*
          (print-unreadable-object (obj stream :type t :identity t)
-           (format stream "~a,~a" (piece-x obj) (piece-y obj))))
+           (format stream "~a,~a" (piece-file obj) (piece-rank obj))))
         (*print-pretty*
          (format stream "~c" (piece-char obj)))))
 
-;; Valid delta checks (only one part of a valid move check)
-(defmacro with-delta (seq body) ; (with-delta (obj x y) forms*)
-  "Helper that binds dx and dy inside body given x, y, and piece"
-  `(with-slots (x-pos y-pos) ,(car seq)
-     (let ((dx (abs- ,(cadr seq) x-pos))
-           (dy (abs- ,(caddr seq) y-pos)))
-       ,body)))
-    
-(defmethod valid-delta-p ((obj king) x y)
-  (with-delta (obj x y)
-    (and (<= dx 1) (<= dy 1))))
+;; Valid delta predicates
+(defgeneric valid-delta-p (obj x y)
+  (:documentation "Test if given square could be reached by given piece")
+  (:method ((obj king) x y)
+    (with-delta (obj x y)
+      (and (<= dx 1) (<= dy 1))))
+  
+  (:method ((obj queen) x y)
+    (with-delta (obj x y)
+      (or (= dx 0)
+          (= dy 0)
+          (= dx dy))))
+  
+  (:method ((obj rook) x y)
+    (with-delta (obj x y)
+      (or (= dx 0) (= dy 0))))
+  
+  (:method ((obj bishop) x y)
+    (with-delta (obj x y)
+      (= dx dy)))
+  
+  (:method ((obj knight) x y)
+    (with-delta (obj x y)
+      (or (and (= dx 2) (= dy 1))
+          (and (= dx 1) (= dy 2)))))
 
-(defmethod valid-delta-p ((obj queen) x y)
-  (with-delta (obj x y)
-    (or (= dx 0)
-        (= dy 0)
-        (= dx dy))))
+  (:method ((obj pawn) x y)
+    (with-delta (obj x y)
+      (and (<= dx 1)
+           (if (pawn-jumped? obj)
+               (= dy 1)
+               (<= dy 2))
+           (funcall (if-color obj #'+ve #'-ve)
+                    (- y (piece-rank obj)))))))
 
-(defmethod valid-delta-p ((obj rook) x y)
-  (with-delta (obj x y)
-    (or (= dx 0) (= dy 0))))
+;; Piece delta getters
+(defgeneric get-delta (obj)
+  (:documentation "Return list of directions given piece can move in")
+  (:method ((obj king))
+    (append cross-moves diag-moves))
+  
+  (:method ((obj queen))
+    (append cross-moves diag-moves))
+  
+  (:method ((obj rook))
+    cross-moves)
+  
+  (:method ((obj bishop))
+    diag-moves)
+  
+  (:method ((obj knight))
+    '((2 . 1) (-2 . 1) (2 . -1) (-2 . -1)
+      (1 . 2) (-1 . 2) (1 . -2) (-1 . -2))))
 
-(defmethod valid-delta-p ((obj bishop) x y)
-  (with-delta (obj x y)
-    (= dx dy)))
+;; Move predicate
+(defun valid-move-p (obj x y)
+  (declare (ftype (function (piece integer integer) boolean)))
+  (check-board
+   (gen-board (if (typep obj 'pawn)
+                  '((0 . 1) (0 . -1) (0 . 2) (0 . -2))
+                  (get-delta obj))
+              (loop with nx = (+ file dx) and ny = (+ rank dy)
+                    while (and (valid-position-p nx ny)
+                               (valid-delta-p obj nx ny)
+                               (empty-square-p nx ny))
+                    do (setb board nx ny 1)
+                       (incf nx dx)
+                       (incf ny dy)))
+   x y))
 
-(defmethod valid-delta-p ((obj knight) x y)
-  (with-delta (obj x y)
-    (or (and (= dx 2) (= dy 1))
-        (and (= dx 1) (= dy 2)))))
+;; Capture predicate
+(defun valid-capture-p (obj x y)
+  (declare (ftype (function (piece integer integer) boolean)))
+  (check-board
+   (gen-board (if (typep obj 'pawn)
+                  diag-moves
+                  (get-delta obj))
+              (loop with nx = (+ file dx) and ny = (+ rank dy)
+                    while (and (valid-position-p nx ny)
+                               (valid-delta-p obj nx ny)
+                               (empty-square-p nx ny (piece-color obj)))
+                    do (when (not (empty-square-p nx ny (opposite-color obj)))
+                         (setb board nx ny 1))
+                       (incf nx dx)
+                       (incf ny dy)))
+   x y))
 
-(defmethod valid-delta-p ((obj pawn) x y)
-  (with-slots (color last-moved x-pos y-pos) obj
-    (let ((dx (- x x-pos))
-          (dy (- y y-pos)))
-      (and (<= dx 1) ; Assuming capture checks have already passed
-           (if (eq color 'white) ; Assuming white pawns travel upwards
-               (> dy 0)
-               (< dy 0))
-           (if last-moved ; Advancing twice on first move
-               (= (abs dy) 1)
-               (<= (abs dy) 2))))))
+;; Promotion predicate
+#| TODO: Just realised promotions can be made together with captures
+ | i.e. exd8=Q is a valid promotion. That's easy to implement here
+ | (and currently is) but `parse.lisp' has to be updated.
+|#
+(defun valid-promotion-p (obj x y)
+  (declare (ftype (function (pawn integer integer) boolean)))
+  (and (typep obj 'pawn)
+       (= y (if-color obj 7 0))
+       (or (valid-move-p obj x y)
+           (valid-capture-p obj x y))))

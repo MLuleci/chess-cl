@@ -1,4 +1,4 @@
-;;;; Functions to control terminal colors & cursor
+b;;;; Functions to control terminal colors & cursor
 
 (in-package :chess-cl)
 

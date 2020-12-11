@@ -37,6 +37,12 @@
       (setf out (or (and (not i) out)
                     (and i (not out))))))) ; out := vars[i] xor vars[i-1]
 
+(defun +ve (arg)
+  (> arg 0))
+
+(defun -ve (arg)
+  (< arg 0))
+
 (defun imply (ant con)
   "Logical IMPLY operator; ant -> con"
   (if ant con t))
@@ -81,12 +87,21 @@
              (valid-position-p x y))
     (bit board (+ x (* y 8)))))
 
-(defmacro abs- (&rest numbers)
-  "Calculate absolute difference"
-  `(abs (apply #'- ',numbers)))
+(defun check-board (board x y)
+  "Test if board(x, y) = 1"
+  (= (getb board x y) 1))
 
-(defmacro if-color (obj white-clause black-clause)
-  "Execute a branch depending on piece color"
-  `(if (eq (piece-color obj) 'white)
-       ,white-clause
-       ,black-clause))
+(defun abs- (&rest numbers)
+  "Calculate absolute difference"
+  (abs (apply #'- numbers)))
+
+(defun  print-bitboard (board)
+  (dotimes (y 8)
+    (dotimes (x 8)
+      (format t "~a" (getb board x (- 7 y))))
+    (format t "~%")))
+
+(defmacro with-cons ((left right) pair &body body)
+  "Unpack a cons and bind its (car . cdr) to (left right) respectively"
+  (append `(let ((,left (car ,pair)) (,right (cdr ,pair))))
+          body))

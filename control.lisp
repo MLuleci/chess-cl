@@ -3,6 +3,7 @@
 (in-package :chess-cl)
 
 ;;; Global variables
+
 (defparameter *turn-number* 0) ; Keeps track of half-turns i.e. just one player's go
 
 ; fifty- & seventy-five-move rules (100 & 150 half-turns respectively)
@@ -11,74 +12,9 @@
 (defparameter *last-capture* nil)
 (defparameter *last-pawn-move* nil)
 
-; Player who has resigned or offered a draw
+; Player who has resigned oxr offered a draw
 (defparameter *resigned* nil)
 (defparameter *draw-offer* nil)
-
-;;; Generic methods
-; All return t on success, nil otherwise
-
-;; Move methods
-; Tests if this move would cause player to be in check, undos if that's the case
-(defmethod move-piece ((obj piece) x y)
-  "Move a piece"
-  (with-slots (x-pos y-pos last-moved) obj
-    (let ((prev-x x-pos)
-          (prev-y y-pos))
-      (setf x-pos x
-            y-pos y)
-      (if (checked-p (get-current-player))
-          (psetf x-pos prev-x
-                 y-pos prev-y)
-          (setf last-moved *turn-number*)))))
-
-(defmethod move-piece ((obj pawn) x y)
-  "Move a pawn"
-  (let ((double? (= (abs- (piece-y obj) y) 2)))
-    (when (call-next-method)
-      (when double?
-        (setf (pawn-double-step obj) t))
-      (setf *last-pawn-move* *turn-number*))))
-  
-;; Capture methods
-(defmethod capture-piece ((obj piece) x y)
-  "Capture a piece"
-  (let ((player (player-with-color (piece-color obj)))
-        (versus (player-with-color (piece-color victim)))
-        (victim (car (find-piece :file x :rank y))))
-    #| 1. Remove captured piece from board
-     | 2. Move attacking piece
-     | -- test for check --
-     | 3. Increment attacker's score
-     | 4. Decrement versus' score
-     | 5. Set *last-capture*
-    |#
-    (delete victim (gethash (type-of victim) (player-pieces versus)))
-    (if (move-piece obj x y)
-        (progn
-          (incf (player-score player) (piece-value victim))
-          (decf (player-score versus) (piece-value victim))
-          (setf *last-capture* *turn-number*))
-        (progn
-          (push victim (gethash (type-of victim) (player-pieces versus)))
-          (return nil)))))
-
-(defmethod capture-piece ((obj pawn) x y)
-  "Capture a/by pawn (possibly en-passant)"
-  (if (null (find-piece :file x :rank y)) ; En-passant
-      (let ((player (player-with-color (piece-color obj)))
-            (versus (player-with-color (piece-color victim)))
-            (victim (car (find-piece :file x :rank (piece-y obj)))))
-        (delete victim (gethash (type-of victim) (player-pieces versus)))
-        (if (move-piece obj x y)
-            (progn
-              (incf (player-score player) (piece-value victim))
-              (decf (player-score versus) (piece-value victim))
-              (setf *last-capture* *turn-number*))
-            (progn
-              (push victim (gethash (type-of victim) (player-pieces versus)))
-              (return nil))))
-      (call-next-method)))
 
 ;;; Helpers
 
@@ -88,24 +24,11 @@
       *white-player*
       *black-player*))
 
-(defun checked-p (player)
-  "Test if given player is in check"
-  (let* ((color (player-color player))
-         (king (car (find-piece :kind 'king :color color)))
-         (file (piece-x king))
-         (rank (piece-y king)))
-    (block test
-      (iterate-pieces
-       (lambda (obj)
-         (when (valid-capture-p obj file rank)
-           (return-from test t)))))))
-
-(defun checkmate-p (player)
-  "Test if given player has been mated"
-  nil)
-  #|
-  (when (checked-p player) ; Must be checked to be mated
-    #| TODO |#))|#
+(defun get-current-color ()
+  "Return the color of the current player"
+  (if (evenp *turn-number*)
+      'white
+      'black))
 
 (defun fifty-move-p ()
   "Test for the fifty-move rule; enables either player to claim a draw"
@@ -131,7 +54,67 @@
       (seventy-five-move-p)
       *resigned*))
 
-;;; Executor functions
+(defun checked-p (player)
+  "Test if given player is in check"
+  (let ((king (car (find-piece :kind 'king :color (player-color player)))))
+    (not (null (remove-if-not
+                (lambda (enemy)
+                  (valid-capture-p enemy (file king) (rank king)))
+                (find-piece :color (opposite-color player)))))))
+
+; Valid move checks should be done already
+(defgeneric try-move (obj x y)
+  (:documentation "Try and perform a move, undo if not possible; returns boolean")
+  (:method ((obj piece) x y)
+    (let ((oldx (piece-file obj))
+          (oldy (piece-rank obj)))
+      (setb (player-board (get-current-player)) x y 1)
+      (psetf (piece-file obj) x
+             (piece-rank obj) y)
+      (if (checked-p (get-current-player))
+          (progn
+            (setb (player-board (get-current-player)) x y 0)
+            (psetf (piece-file obj) oldx
+                   (piece-rank obj) oldy))
+          (imply (typep obj 'pawn)
+                 (setf *last-pawn-move* *turn-number*))))))
+
+(defgeneric try-capture (obj x y)
+  (:documentation "Try and perform a capture, undo if not possible; returns boolean")
+  (:method ((obj piece) x y)
+    (let* ((player (get-current-player))
+          (versus (player-with-color (opposite-color player)))
+          (victim (car (find-piece :file x :rank y :color (opposite-color player))))
+          (oldx (piece-file obj))
+          (oldy (piece-rank obj)))
+      (when victim
+        (delete victim (gethash (type-of victim) (player-pieces versus)))
+        (if (try-move obj x y)
+            (progn
+              (incf (player-score player) (piece-value victim))
+              (decf (player-score versus) (piece-value victim))
+              (setf *last-capture* *turn-number*))
+            (progn
+              (push victim (gethash (type-of victim) (player-pieces versus)))
+              nil)))))
+  (:method ((obj pawn) x y)
+    (if (null (find-piece :file x :rank y)) ; En-passant
+        (let* ((player (get-current-player))
+              (versus (player-with-color (opposite-color player)))
+              (victim (car (find-piece :file x :rank (piece-y obj) :color (opposite-color player)))))
+          (when victim
+            (delete victim (gethash (type-of victim) (player-pieces versus)))
+            (if (try-move obj x y)
+                (progn
+                  (incf (player-score player) (piece-value victim))
+                  (decf (player-score versus) (piece-value victim))
+                  (setf *last-capture* *turn-number*))
+                (progn
+                  (push victim (gethash (type-of victim) (player-pieces versus)))
+                  nil))))
+        (call-next-method))))
+
+;;; Player action functions
 ; All return t on success, nil otherwise
 
 (defun help ()
@@ -159,119 +142,71 @@
 
 (defun move (piece square)
   "Execute a move"
-  (let* ((color (player-color (get-current-player)))
-         (file (cadr square))
-         (rank (cadddr square))
-         (seq (remove-if-not
-               (lambda (obj) ; Filter those that can move
-                 (and (eq (piece-color obj) color)
-                      (valid-move-p obj file rank)))
-               (apply #'find-piece piece))))
-    (cond ((null seq) ; No match
-           (format t "Invalid move, try again~%"))
-          ((> (length seq) 1) ; Too many matches
-           (format t "Ambiguous move, try again~%"))
-          (t
-           (unless (move-piece (car seq) file rank)
-             (format t "Invalid move while in check, try again~%"))))))
+  (with-cons (file rank) square
+    (let ((seq (remove-if-not
+                (lambda (obj)
+                  (valid-move-p obj file rank))
+                (apply #'find-piece piece :color (get-current-color)))))
+      (cond ((null seq) ; No match
+             (format t "Invalid move, try again~%"))
+            ((> (length seq) 1) ; Too many matches
+             (format t "Ambiguous move, try again~%"))
+            (t
+             (unless (try-move (car seq) file rank)
+               (format t "Can't move while in check, try again~%")))))))
 
 (defun capture (piece square)
   "Execute a capture"
-  (let* ((color (player-color (get-current-player)))
-         (file (cadr square))
-         (rank (cadddr square))
-         (seq (remove-if-not
-               (lambda (obj)
-                 (and (eq (piece-color obj) color)
-                      (valid-capture-p obj file rank)))
-               (apply #'find-piece piece))))
-    (cond ((null seq)
-           (format t "Invalid capture, try again~%"))
-          ((> (length seq) 1)
-           (format t "Ambiguous capture, try again~%"))
-          (t
-           (unless (capture-piece (car seq) file rank)
-             (format t "Invalid capture while in check, try again~%"))))))
+  (with-cons (file rank) square
+    (let ((seq (remove-if-not
+                (lambda (obj)
+                  (valid-capture-p obj file rank))
+                (apply #'find-piece piece :color (get-current-player)))))
+      (cond ((null seq)
+             (format t "Invalid capture, try again~%"))
+            ((> (length seq) 1)
+             (format t "Ambiguous capture, try again~%"))
+            (t
+             (unless (try-capture (car seq) file rank)
+               (format t "Can't capture while in check, try again~%")))))))
 
 (defun promotion (square name)
   "Execute a promotion"
-  (let* ((color (player-color (get-current-player)))
-         (file (cadr square))
-         (rank (cadddr square))
-         (type (cadr name))
-         (seq (remove-if-not
-               (lambda (obj)
-                 (valid-promotion-p obj file rank type))
-               (find-piece :kind 'pawn :color color))))
-    (cond ((null seq)
-           (format t "Invalid promotion, try again~%"))
-          ((> (length seq) 1)
-           (format t "Ambiguous promotion, try again~%"))
-          (t
-           (let* ((pawn (car seq))
-                  (color (piece-color pawn))
-                  (new (make-instance type :color color :x file :y rank))
-                  (player (player-with-color color)))
-             #| 1. Remove pawn from board
-              | 2. Add promoted piece to board
-              | -- test for check --
-              | 3. Increment player's score
-              | 4. Set last-moved on promoted piece
-              | 5. Set *last-pawn-move*
-             |#
-             (delete pawn (gethash 'pawn (player-pieces player)))
-             (push new (gethash type (player-pieces player)))
-             (if (checked-p (get-current-player))
-                 (progn
-                   (push pawn (gethash 'pawn (player-pieces player)))
-                   (delete new (gethash type (player-pieces player)))
-                   (format t "Invalid promotion while in check, try again~%"))
-                 (progn
-                   (incf (player-score player) (- (piece-value new) 1))
-                   (setf (piece-moved new) *turn-number*)
-                   (setf *last-pawn-move* *turn-number*))))))))
+  (with-cons (file rank) square
+    (let* ((type (cadr name))
+           (color (get-current-color))
+           (seq (remove-if-not
+                 (lambda (obj)
+                   (valid-promotion-p obj file rank))
+                 (find-piece :kind 'pawn :color color))))
+      (cond ((null seq)
+             (format t "Invalid promotion, try again!%"))
+            ((> (length seq) 1)
+             (format t "Ambiguous promotion, try again!%"))
+            (t
+             (let ((pawn (car seq))
+                   (player (get-current-player))
+                   (new (make-instance type :color color :file file :rank rank)))
+               (if (try-move pawn file rank) ; TODO: Should also allow for captures here
+                   (progn
+                     (delete pawn (gethash 'pawn (player-pieces player)))
+                     (push new (gethash type (player-pieces player)))
+                     (incf (player-score player) (- (piece-value new) 1))
+                     (setf (piece-moved new) *turn-number*))
+                   (format t "Can't promote while in check, try again~%"))))))))
 
-; TODO: Optimize this
 (defun castle (side)
   "Execute a castle"
   (let* ((player (get-current-player))
-         (king (car (gethash 'king (player-pieces player))))
-         (rook (car (remove-if
-                     (lambda (obj)
-                       (and (not (piece-moved obj))
-                            (= (piece-x obj) (if (eq side 'king-side) 7 0))))
-                     (gethash 'rook (player-pieces player))))))
-    (if (and rook
-             (not (piece-moved king))
-             (valid-path-p king ; King's path is empty
-                           (if (eq side 'king-side)
-                               (1- (piece-x rook))
-                               (1+ (piece-x rook)))
-                           (piece-y rook))
-             (not (block test ; King not checked or crossing/ending on an attacked square
-                    (iterate-pieces
-                     (lambda (obj)
-                       (when (and (not (eq (piece-color obj) (piece-color king)))
-                                  #| Iterate over every square between king and 
-                                   | rook (inclusive) checking for possible captures
-                                   |#
-                                  (loop with dx = (signum (- (piece-x rook) (piece-x king)))
-                                     and x = (piece-x king)
-                                     and y = (piece-y king)
-                                     thereis (or (valid-move-p obj x y)
-                                                 (= (- x dx) (piece-x rook)))
-                                     do (incf x dx)
-                                     finally (return nil)))
-                         (return-from test t)))))))
-        (let ((kx (piece-x king))
-              (ky (piece-y king))
-              (rx (piece-x rook))
-              (ry (piece-y rook)))
-          (move-piece king rx ry)
-          (move-piece rook kx ky))
-        (format t "Cannot castle ~a, try again~%" side))))
+         (king (car (find-piece :kind 'king :color (player-color player))))
+         (rook (car (find-piece :kind 'rook :color (player-color player)
+                                :file (if (eq side 'king-side) 7 0)))))
+    (when (and king (-ve (piece-last-moved king))
+               rook (-ve (piece-last-moved rook))
 
-;;; Functions
+                   
+
+;;; Game logic functions
 
 (defun draw-board ()
   (loop for y from 7 downto 0
